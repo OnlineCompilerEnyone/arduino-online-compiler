@@ -19,7 +19,7 @@
 - TypeScript-first Vue components using `<script setup>`, two-space indentation, single quotes.
 - PascalCase component filenames (`CompileForm.vue`), kebab-case for helpers/assets (`collect-artifacts.sh`, `style.scss`).
 - Backend stays a single Pages Function file; keep helpers colocated and async/await with explicit error messages surfaced to users (Chinese user-facing messages, English logs).
-- Keep the `platformio.ini` allowlist in `functions/[[path]].ts` and the defensive checks in `.github/workflows/pio-compile.yml` in sync.
+- Keep the `platformio.ini` validation in `functions/[[path]].ts` (platform name/version format + arduino framework, no whitelist) and the defensive checks in `.github/workflows/pio-compile.yml` in sync.
 
 ## Testing Guidelines
 - Current validation is manual: submit a template build, confirm status polling, failed-build log extraction, artifact download, and refresh persistence.
