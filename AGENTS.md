@@ -4,7 +4,8 @@
 - `frontend/` – Vue 3 + Vite SPA. UI lives in `src/components/` (`CompileForm.vue` holds the form/status machine, `CodeEditor.vue` wraps CodeMirror 6 for `cpp` and `ini`); app bootstrap in `src/main.ts`, i18n in `src/i18n.ts`, shared styles in `src/style.scss`.
 - `functions/[[path]].ts` – Cloudflare Pages Function for `/auth/*` and `/api/*`: OAuth flow, signed session cookie, `platformio.ini` validation, workflow dispatch, status polling, artifact proxying, job-log extraction.
 - `scripts/collect-artifacts.sh` – collects PlatformIO build outputs, writes `flash_args.txt`, and merges ESP32 images with `esptool merge_bin`. Shared by CI and local verification; keep it POSIX-friendly bash.
-- `.github/workflows/pio-compile.yml` – the real build: decode inputs → validate → cache `.platformio` → `pio run` → bundle → encrypt → upload artifact.
+- `scripts/download-project.py` – downloads `project_url` over HTTP/HTTPS and extracts the archive safely (path traversal / links / size limits); the archive root must contain `platformio.ini`.
+- `.github/workflows/pio-compile.yml` – the real build: download `project_url` or decode Base64 inputs → validate → cache `.platformio` → `pio run` → bundle → encrypt → upload artifact.
 - `.dev.vars.example` – template for Wrangler local secrets; copy to `.dev.vars`.
 
 ## Build, Test, and Development Commands
@@ -13,6 +14,7 @@
 - `npm run typecheck --prefix frontend` – `vue-tsc --noEmit`; run before committing.
 - `npm run build --prefix frontend` – production bundle in `frontend/dist/`.
 - `bash scripts/collect-artifacts.sh <project-dir> <bundle-dir>` – verify bundling locally against a synthetic `.pio/build` tree.
+- `python3 scripts/test-download-project.py` – unit tests for `download-project.py` plus the workflow's Prepare project step (zip/tar.gz, redirects, limits, path traversal).
 - `wrangler pages deploy` – publish `dist/` plus `functions/`.
 
 ## Coding Style & Naming Conventions
@@ -34,4 +36,5 @@
 - Never commit secrets; local values go to `.dev.vars`, production to Cloudflare Pages → Settings → Variables.
 - Required env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_OAUTH_REDIRECT_URI`, `SESSION_SECRET`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`, `GITHUB_WORKFLOW_ID`, `GITHUB_WORKFLOW_REF`, `FRONTEND_URL`, `ALLOWED_ORIGINS`; optional `GITHUB_SERVICE_TOKEN`, `GITHUB_REQUIRE_PRIVATE_REPO`.
 - The build runs untrusted user configuration: keep `permissions: contents: read`, never inject secrets into the job, and keep `extra_scripts` / `platform_packages` / remote-URL rejection in place.
+- Web `project_url` submissions stay https-only with private/local hosts rejected; the Actions manual path also allows http. Keep the traversal, link, entry-count and size guards in `scripts/download-project.py` when touching either side.
 - Monitor 401/403/429 to decide when to rotate the shared service token; the UI falls back to the personal OAuth token automatically.
