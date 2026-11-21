@@ -17,10 +17,20 @@ const messages = {
       }
     },
     compileForm: {
+      source: {
+        legend: 'Compile source',
+        files: 'Edit online',
+        url: 'Project package URL'
+      },
       loading: 'Loading...',
       missingScopes:
         'The current authorization is missing the following scopes: {scopes}. Please sign out and authorize again.',
       fields: {
+        projectUrl: {
+          label: 'Project Package URL',
+          placeholder: 'https://example.com/project.zip',
+          hint: 'Downloaded and compiled by GitHub Actions. Use an https zip/tar.gz with platformio.ini at the archive root (≤50 MB); when set it takes precedence over the two editors.'
+        },
         ini: {
           label: 'platformio.ini',
           hint: 'PlatformIO project configuration. Any PlatformIO Registry platform whose framework is arduino works (e.g. espressif32, atmelavr/uno, ststm32).'
@@ -100,6 +110,9 @@ const messages = {
         }
       },
       errors: {
+        projectUrlRequired: 'Enter the project package URL, or switch back to online editing.',
+        projectUrlInvalid: 'The project package URL must be a valid https:// link.',
+        projectUrlTooLong: 'The project package URL is too long (max 2048 characters).',
         iniRequired: 'Please provide the platformio.ini content.',
         sketchRequired: 'Please provide the src/main.cpp content.',
         iniTooLarge: 'platformio.ini is too large. Keep it under 24KB.',
@@ -129,9 +142,19 @@ const messages = {
       }
     },
     compileForm: {
+      source: {
+        legend: '编译来源',
+        files: '在线编辑',
+        url: '工程包 URL'
+      },
       loading: '正在加载...',
       missingScopes: '当前授权缺少以下 scope：{scopes}，请退出后重新授权。',
       fields: {
+        projectUrl: {
+          label: '工程包 URL',
+          placeholder: 'https://example.com/project.zip',
+          hint: '由 GitHub Actions 下载后编译。使用 https zip/tar.gz，压缩包根目录必须有 platformio.ini（≤50MB）；填写后优先于两个在线编辑框。'
+        },
         ini: {
           label: 'platformio.ini',
           hint: 'PlatformIO 工程配置。只要 framework 包含 arduino，PlatformIO Registry 中的平台都可以使用（例如 espressif32、atmelavr/uno、ststm32）。'
@@ -209,6 +232,9 @@ const messages = {
         }
       },
       errors: {
+        projectUrlRequired: '请填写工程包 URL，或切换回在线编辑。',
+        projectUrlInvalid: '工程包 URL 必须是合法的 https:// 链接。',
+        projectUrlTooLong: '工程包 URL 过长，最多 2048 个字符。',
         iniRequired: '请填写 platformio.ini 内容。',
         sketchRequired: '请填写 src/main.cpp 内容。',
         iniTooLarge: 'platformio.ini 内容过大，请控制在 24KB 以内。',
