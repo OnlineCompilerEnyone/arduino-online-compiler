@@ -5,11 +5,15 @@ on:
     inputs:
       encoded_ini:
         description: Base64 编码的 platformio.ini 内容
-        required: true
+        required: false
         type: string
       encoded_sketch:
         description: Base64 编码的 src/main.cpp 内容
-        required: true
+        required: false
+        type: string
+      project_url:
+        description: 完整工程包的 HTTP/HTTPS 链接（ZIP 或 tar.gz，优先使用）
+        required: false
         type: string
       request_id:
         description: 用于标识此次编译请求的唯一 ID
@@ -47,34 +51,59 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Decode project
+      - name: Prepare project
         id: decode
         run: |
           set -eo pipefail
           event_path="$GITHUB_EVENT_PATH"
           project_dir="$GITHUB_WORKSPACE/project"
 
-          ini="$(jq -r '.inputs.encoded_ini' "$event_path")"
-          sketch="$(jq -r '.inputs.encoded_sketch' "$event_path")"
-          password="$(jq -r '.inputs.artifact_password' "$event_path")"
+          ini="$(jq -r '.inputs.encoded_ini // ""' "$event_path")"
+          sketch="$(jq -r '.inputs.encoded_sketch // ""' "$event_path")"
+          project_url="$(jq -r '.inputs.project_url // ""' "$event_path")"
+          password="$(jq -r '.inputs.artifact_password // ""' "$event_path")"
 
-          for value in "$ini" "$sketch" "$password"; do
-            if [[ -z "$value" || "$value" == "null" ]]; then
-              echo "Missing required workflow input" >&2
-              exit 1
-            fi
-          done
+          if [[ -z "$password" ]]; then
+            echo "Missing required artifact password" >&2
+            exit 1
+          fi
 
           echo "::add-mask::$password"
 
-          mkdir -p "$project_dir/src"
-          printf '%s' "$ini" | base64 --decode > "$project_dir/platformio.ini"
-          printf '%s' "$sketch" | base64 --decode > "$project_dir/src/main.cpp"
+          if [[ -n "$project_url" ]]; then
+            # 工程包优先：下载/解压失败直接终止，不回退到 Base64 输入。
+            printf '%s' "$project_url" | python3 scripts/download-project.py "$project_dir"
+          else
+            if [[ -z "$ini" || -z "$sketch" ]]; then
+              echo "Missing Base64 project inputs" >&2
+              exit 1
+            fi
+            mkdir -p "$project_dir/src"
+            printf '%s' "$ini" | base64 --decode > "$project_dir/platformio.ini"
+            printf '%s' "$sketch" | base64 --decode > "$project_dir/src/main.cpp"
+          fi
+
+          if [[ ! -f "$project_dir/platformio.ini" ]]; then
+            echo "工程包根目录必须包含 platformio.ini" >&2
+            exit 1
+          fi
 
           # 后端已经校验过一次，这里再兜一层，避免绕过 API 直接触发工作流
           if ! grep -qE '^\[env:' "$project_dir/platformio.ini"; then
             echo "platformio.ini 中缺少 [env:] 环境段" >&2
+            exit 1
+          fi
+          if ! grep -qE '^[[:space:]]*platform[[:space:]]*=' "$project_dir/platformio.ini"; then
+            echo "platformio.ini 缺少 platform 配置" >&2
+            exit 1
+          fi
+          if grep -vE '^[[:space:]]*[;#]' "$project_dir/platformio.ini" \
+            | grep -E '^[[:space:]]*framework[[:space:]]*=' \
+            | grep -qvi 'arduino'; then
+            echo "framework 必须包含 arduino" >&2
             exit 1
           fi
           if grep -qE '^[[:space:]]*(extra_scripts|platform_packages)[[:space:]]*=' "$project_dir/platformio.ini"; then
@@ -87,7 +116,11 @@ jobs:
           fi
 
           echo "platformio.ini bytes: $(wc -c < "$project_dir/platformio.ini")"
-          echo "main.cpp bytes: $(wc -c < "$project_dir/src/main.cpp")"
+          if [[ -f "$project_dir/src/main.cpp" ]]; then
+            echo "main.cpp bytes: $(wc -c < "$project_dir/src/main.cpp")"
+          else
+            echo "src/main.cpp not found (project archive may use an .ino layout)"
+          fi
 
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
