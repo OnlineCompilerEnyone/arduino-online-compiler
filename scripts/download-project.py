@@ -112,9 +112,42 @@ def extract(archive, project):
         raise ProjectError('Project archive could not be extracted') from None
 
 
+def strip_single_root(entries):
+    # GitHub "Download ZIP" wraps everything in one folder (repo-main/); unwrap it.
+    roots = set()
+    files = set()
+    for name, is_dir, _size, _mode, _item in entries:
+        path = member_path(name)
+        if path is None:
+            continue
+        roots.add(path.parts[0])
+        if not is_dir:
+            files.add(path)
+    if len(roots) != 1:
+        return entries
+    root = roots.pop()
+    if PurePosixPath(root, 'platformio.ini') not in files:
+        return entries
+
+    stripped = []
+    for name, is_dir, size, mode, item in entries:
+        path = member_path(name)
+        if path is None:
+            continue
+        rest = path.parts[1:]
+        if not rest:
+            if is_dir:
+                continue
+            raise ProjectError('Archive contains conflicting paths')
+        stripped.append(('/'.join(rest), is_dir, size, mode, item))
+    return stripped
+
+
 def extract_entries(entries, open_member, project):
     if len(entries) > MAX_ENTRIES:
         raise ProjectError('Archive contains too many entries')
+
+    entries = strip_single_root(entries)
 
     files = set()
     directories = set()
