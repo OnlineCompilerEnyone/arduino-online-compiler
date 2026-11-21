@@ -460,10 +460,68 @@ function validatePlatformioIni(text: string): string | null {
   return null;
 }
 
+const MAX_PROJECT_URL_LENGTH = 2048;
+
+// 工程包 URL 只允许 https，且不能指向本机/内网，避免被拿来做 SSRF。
+// 真正的下载发生在 GitHub Actions runner 上，这里尽早给出中文错误。
+function isPrivateHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
+    return true;
+  }
+  if (host === '0.0.0.0') {
+    return true;
+  }
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) {
+    return false;
+  }
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 100 && second >= 64 && second <= 127)
+  );
+}
+
+function validateProjectUrl(raw: string): string | null {
+  if (raw.length > MAX_PROJECT_URL_LENGTH) {
+    return `工程包 URL 过长，需不超过 ${MAX_PROJECT_URL_LENGTH} 个字符`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return '工程包 URL 格式不正确';
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return '工程包 URL 仅支持 https:// 链接';
+  }
+  if (parsed.username || parsed.password) {
+    return '工程包 URL 不能包含用户名或密码';
+  }
+  if (parsed.hostname.startsWith('[')) {
+    return '工程包 URL 不支持 IPv6 字面量地址，请改用域名';
+  }
+  if (isPrivateHostname(parsed.hostname)) {
+    return '工程包 URL 不能指向本机或内网地址';
+  }
+
+  return null;
+}
+
 async function handleCompile(request: Request, env: Env): Promise<Response> {
   let body: {
     encodedIni?: string;
     encodedSketch?: string;
+    projectUrl?: string;
     useUserToken?: boolean;
     artifactPassword?: string;
     pioVersion?: string;
@@ -475,28 +533,47 @@ async function handleCompile(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ message: '请求体必须是 JSON' }, 400);
   }
 
-  const encodedIni = body.encodedIni;
-  const encodedSketch = body.encodedSketch;
-  if (!encodedIni || typeof encodedIni !== 'string') {
-    return jsonResponse({ message: '缺少 encodedIni 字段（platformio.ini）' }, 400);
-  }
-  if (!encodedSketch || typeof encodedSketch !== 'string') {
-    return jsonResponse({ message: '缺少 encodedSketch 字段（src/main.cpp）' }, 400);
+  // 工程包 URL 优先：非空时忽略 encodedIni / encodedSketch（但后端仍会校验 URL 形态）。
+  const projectUrl = typeof body.projectUrl === 'string' ? body.projectUrl.trim() : '';
+  const hasProjectUrl = projectUrl.length > 0;
+  if (hasProjectUrl) {
+    const urlError = validateProjectUrl(projectUrl);
+    if (urlError) {
+      return jsonResponse({ message: urlError }, 400);
+    }
   }
 
-  const iniLength = decodeBase64Length(encodedIni);
-  if (iniLength <= 0 || iniLength > MAX_INI_BYTES) {
-    return jsonResponse(
-      { message: `platformio.ini 大小不合法，需小于 ${MAX_INI_BYTES / 1024}KB` },
-      400
-    );
-  }
-  const sketchLength = decodeBase64Length(encodedSketch);
-  if (sketchLength <= 0 || sketchLength > MAX_SKETCH_BYTES) {
-    return jsonResponse(
-      { message: `main.cpp 大小不合法，需小于 ${MAX_SKETCH_BYTES / 1024}KB` },
-      400
-    );
+  const encodedIni = typeof body.encodedIni === 'string' ? body.encodedIni : '';
+  const encodedSketch = typeof body.encodedSketch === 'string' ? body.encodedSketch : '';
+
+  if (!hasProjectUrl) {
+    if (!encodedIni) {
+      return jsonResponse(
+        { message: '缺少 encodedIni 字段（platformio.ini），或提供 projectUrl 工程包链接' },
+        400
+      );
+    }
+    if (!encodedSketch) {
+      return jsonResponse(
+        { message: '缺少 encodedSketch 字段（src/main.cpp），或提供 projectUrl 工程包链接' },
+        400
+      );
+    }
+
+    const iniLength = decodeBase64Length(encodedIni);
+    if (iniLength <= 0 || iniLength > MAX_INI_BYTES) {
+      return jsonResponse(
+        { message: `platformio.ini 大小不合法，需小于 ${MAX_INI_BYTES / 1024}KB` },
+        400
+      );
+    }
+    const sketchLength = decodeBase64Length(encodedSketch);
+    if (sketchLength <= 0 || sketchLength > MAX_SKETCH_BYTES) {
+      return jsonResponse(
+        { message: `main.cpp 大小不合法，需小于 ${MAX_SKETCH_BYTES / 1024}KB` },
+        400
+      );
+    }
   }
 
   const requestId = crypto.randomUUID();
@@ -520,25 +597,31 @@ async function handleCompile(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ message: 'PlatformIO 版本号格式不正确，应形如 6.1.18' }, 400);
   }
 
-  let iniText: string;
-  try {
-    iniText = decodeBase64ToString(encodedIni);
-  } catch (error) {
-    console.error('Failed to decode platformio.ini', error);
-    return jsonResponse({ message: 'platformio.ini 无法解码，请检查内容' }, 400);
-  }
+  if (!hasProjectUrl) {
+    let iniText: string;
+    try {
+      iniText = decodeBase64ToString(encodedIni);
+    } catch (error) {
+      console.error('Failed to decode platformio.ini', error);
+      return jsonResponse({ message: 'platformio.ini 无法解码，请检查内容' }, 400);
+    }
 
-  const iniError = validatePlatformioIni(iniText);
-  if (iniError) {
-    return jsonResponse({ message: iniError }, 400);
+    const iniError = validatePlatformioIni(iniText);
+    if (iniError) {
+      return jsonResponse({ message: iniError }, 400);
+    }
   }
 
   const inputs: Record<string, string> = {
-    encoded_ini: encodedIni,
-    encoded_sketch: encodedSketch,
     request_id: requestId,
     artifact_password: artifactPassword
   };
+  if (hasProjectUrl) {
+    inputs.project_url = projectUrl;
+  } else {
+    inputs.encoded_ini = encodedIni;
+    inputs.encoded_sketch = encodedSketch;
+  }
   if (pioVersion) {
     inputs.pio_version = pioVersion;
   }
