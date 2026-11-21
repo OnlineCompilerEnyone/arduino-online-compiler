@@ -17,13 +17,22 @@
 
 | 项目 | 支持情况 |
 | --- | --- |
-| 平台（`platform`） | `espressif32`、`espressif8266`（含 `@版本` 固定写法，如 `espressif32@6.9.0`） |
+| 平台（`platform`） | PlatformIO Registry 中的任意平台，只要它支持 Arduino 框架：`espressif32`、`espressif8266`、`atmelavr`（Arduino UNO / Mega）、`ststm32`、`raspberrypi`（Pico）等；可带 `@版本`，如 `espressif32@6.9.0`、`atmelavr@^4.0` |
 | 框架（`framework`） | 必须包含 `arduino` |
-| 板卡（`board`） | 对应平台的任意合法 board id，例如 `esp32dev`、`esp32-s3-devkitc-1`、`esp32-c3-devkitm-1`、`nodemcuv2`、`d1_mini` |
+| 板卡（`board`） | 对应平台的任意合法 board id，例如 `esp32dev`、`nodemcuv2`、`uno`、`megaatmega2560`、`pico` |
 | 体积上限 | `platformio.ini` ≤ 24KB，`main.cpp` ≤ 64KB |
-| 明确不支持 | `extra_scripts`、`platform_packages`、远程平台/依赖地址（`http(s)://`），以及非 Arduino 框架 |
+| 明确不支持 | `extra_scripts`、`platform_packages`、远程平台/依赖地址（`http(s)://`）、平台与工具链的本地路径，以及非 Arduino 框架 |
 
-> 注意：官方 `platformio/espressif32` 当前停在 6.9.0（对应 Arduino core 2.0.17）。想用 Arduino core 3.x 或 ESP32-C6/H2/P4 需要把 `platform` 换成 pioarduino 维护的 fork，本项目出于安全考虑只允许平台**名称**、不允许远程平台 URL，必要时请自行扩展白名单。
+> 注意：官方 `platformio/espressif32` 当前停在 6.9.0（对应 Arduino core 2.0.17）。想用 Arduino core 3.x 或 ESP32-C6/H2/P4 需要把 `platform` 换成 pioarduino 维护的 fork，本项目出于安全考虑只允许平台**名称**、不允许远程平台 URL 或本地路径。
+
+Arduino UNO 的最小可用配置：
+
+```ini
+[env:uno]
+platform = atmelavr
+board = uno
+framework = arduino
+```
 
 ## 目录结构
 
@@ -102,13 +111,13 @@ firmware-<request_id>-password.zip
     ├── firmware.bin / firmware.hex / firmware.uf2
     ├── firmware.elf
     ├── bootloader.bin, partitions.bin, boot_app0.bin   （ESP32 系；boot_app0.bin 自动取自 Arduino 框架包）
-    ├── merged-0x0.bin        ← 单文件镜像（含 bootloader/分区表/boot_app0/应用，直刷 0x0）
+    ├── merged-0x0.bin        ← 单文件镜像（仅 ESP32 系，含 bootloader/分区表/boot_app0/应用，直刷 0x0）
     └── flash_args.txt        ← 现成的 esptool / avrdude 命令
 └── build.log
 └── BUILD-INFO.txt
 ```
 
-`flash_args.txt` 示例：
+`flash_args.txt` 示例（ESP32）：
 
 ```bash
 # 方式一（推荐）
@@ -124,10 +133,18 @@ esptool.py --chip esp32 -p COM_PORT -b 460800 write_flash 0x1000 bootloader.bin 
 > esptool.py --chip esp32 -p COM_PORT erase_region 0xe000 0x2000
 > ```
 
+AVR 板卡（Arduino UNO 等）的产物是 `firmware.hex`，`flash_args.txt` 会给出 avrdude 命令：
+
+```bash
+avrdude -p atmega328p -c arduino -P COM_PORT -b 115200 -U flash:w:firmware.hex:i
+```
+
+RP2040 板卡（`raspberrypi` 平台）的产物是 `firmware.uf2`，把开发板切到 BOOTSEL 模式后直接复制到对应磁盘即可。
+
 ## 安全说明
 
 - 工作流固定 `permissions: contents: read`，构建过程中不注入任何 secret；`GITHUB_TOKEN` 不会被导出到构建环境。
-- `platformio.ini` 在后端和白名单层都做了校验，拦截 `extra_scripts`、`platform_packages`、远程 URL——这些都会在 runner 上执行任意代码。**库（`lib_deps`）的 PlatformIO 包仍可能携带构建脚本，这是本方案残留的风险，公开服务上线前请自行评估。**
+- `platformio.ini` 在后端校验层做了校验，拦截 `extra_scripts`、`platform_packages`、远程 URL 与平台/工具链本地路径——这些都会在 runner 上执行任意代码；平台本身不再限制白名单，但只允许 PlatformIO Registry 中的正式名称（是否支持 Arduino 由 `framework` 决定）。**库（`lib_deps`）和第三方平台的安装脚本仍可能携带构建脚本，这是本方案残留的风险，公开服务上线前请自行评估。**
 - 压缩包密码作为 `workflow_dispatch` 输入传递，能读该 run 的人可以看到它；密码只用于防止产物被随意抓取，不构成访问控制。
 - 公开仓库的 Actions 分钟数免费，但任何人都能调用本服务消耗资源：上线前建议加 Cloudflare Turnstile、按 GitHub 用户/ IP 限流，并限制仓库并发。
 - 永远不要把真实密钥写进仓库；生产变量走 Cloudflare 控制台，本地放 `.dev.vars`（已被 `.gitignore` 忽略）。
@@ -136,7 +153,7 @@ esptool.py --chip esp32 -p COM_PORT -b 460800 write_flash 0x1000 bootloader.bin 
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `Unknown board ID` | `board` 写了平台里不存在的名字；先用 `pio boards espressif32` 查 |
+| `Unknown board ID` | `board` 写了平台里不存在的名字；先用 `pio boards <platform>` 查（如 `pio boards atmelavr`） |
 | `Could not find a version that satisfies the requirement platformio==x.y.z` | 版本号写错或该版本不存在，清空版本框用最新版即可 |
 | 编译超时 | 工作流超时 25 分钟；首次编译需要下载平台与工具链，缓存命中后会快很多 |
 | 产物里没有 `merged-0x0.bin` | 看 CI 日志里的 `merged image skipped ...` 原因：ESP8266/AVR 无分段镜像、esptool 未找到、或合并失败；分段 bins 和 `flash_args.txt` 仍然可用 |
