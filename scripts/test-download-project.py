@@ -141,6 +141,25 @@ class ProjectTests(unittest.TestCase):
                     self.assertEqual((target / name).read_bytes(), content)
                 self.assertFalse((target / 'src/main.cpp').exists())
 
+    def test_single_top_level_folder_is_unwrapped(self):
+        wrapped = {f'repo-main/{name}': content for name, content in FILES.items()}
+        for archive_bytes in (zip_bytes(wrapped), tar_bytes(wrapped)):
+            with self.subTest(kind=archive_bytes[:2]), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                archive = Path(temp) / 'archive'
+                archive.write_bytes(archive_bytes)
+                target = Path(temp) / 'project'
+                download_project.extract(archive, target)
+                for name, content in FILES.items():
+                    self.assertEqual((target / name).read_bytes(), content)
+                self.assertFalse((target / 'repo-main').exists())
+
+        with tempfile.TemporaryDirectory(dir=self.root) as temp:
+            archive = Path(temp) / 'archive'
+            archive.write_bytes(zip_bytes({'platformio.ini': INI, 'lib/x/a.h': b'a', 'lib/y/b.h': b'b'}))
+            target = Path(temp) / 'project'
+            download_project.extract(archive, target)
+            self.assertEqual((target / 'lib/x/a.h').read_bytes(), b'a')
+
     def test_workflow_prefers_url(self):
         result = self.prepare({
             'project_url': self.base_url + '/project.zip',
@@ -222,7 +241,7 @@ class ProjectTests(unittest.TestCase):
             zip_bytes({'platformio.ini': INI, 'C:/escape': b'bad'}),
             tar_bytes({'platformio.ini': INI, '/escape': b'bad'}),
             zip_bytes({'platformio.ini': INI, 'src': b'file', 'src/main.cpp': b'bad'}),
-            zip_bytes({'wrapper/platformio.ini': INI}),
+            zip_bytes({'wrapper/platformio.ini': INI, 'other/x.h': b'a'}),
             symlink.getvalue(),
             tar_link.getvalue(),
         ]

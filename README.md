@@ -131,7 +131,7 @@ Vite 已把 `/auth/*` 与 `/api/*` 代理到 `http://127.0.0.1:8787`。
 
 ### GitHub Actions 手动编译完整工程
 
-在 Actions 的 **Arduino Compile** 工作流中填写 `project_url`，提供可直接下载 ZIP 或 tar.gz 的 HTTP/HTTPS 链接。压缩包根目录必须有 `platformio.ini`；其他完整工程内容（例如 `src/`、`include/`、`lib/`、`data/`、`boards/`、`scripts/`、`test/`）会一并保留，不限定入口文件名。仅支持普通文件和目录，不支持符号链接、硬链接、特殊文件或越界路径。
+在 Actions 的 **Arduino Compile** 工作流中填写 `project_url`，提供可直接下载 ZIP 或 tar.gz 的 HTTP/HTTPS 链接。`platformio.ini` 必须位于压缩包根目录（若压缩包只有一个顶层文件夹，如 GitHub 的 Download ZIP 产生的 `repo-main/`，会自动展开）；其他完整工程内容（例如 `src/`、`include/`、`lib/`、`data/`、`boards/`、`scripts/`、`test/`）会一并保留，不限定入口文件名。仅支持普通文件和目录，不支持符号链接、硬链接、特殊文件或越界路径。
 
 `project_url` 非空时优先使用工程包，下载、解压或校验失败会直接终止，不会回退到 Base64 输入。留空时必须提供 `encoded_ini` 和 `encoded_sketch`，保持原有行为。两种方式都需要 `request_id` 和 `artifact_password`；`pio_version` 可选。网页表单同样支持 URL 模式，但仅限 `https://`。
 
