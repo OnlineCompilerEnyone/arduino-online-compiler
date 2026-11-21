@@ -6,6 +6,8 @@
 #      boot_app0.bin taken from the Arduino framework package
 #   B) esptool v5 layout (esptool executable + merge-bin) with merge_bin rejected
 #   C) no esptool available -> build still succeeds, reason is printed, no merged image
+#   D) AVR (Arduino UNO, atmelavr) -> firmware.hex + avrdude, no esptool/merged image
+#   E) non-ESP binary platform (ststm32) -> no esptool flash command
 #
 # Works on Linux and on Windows git-bash (cygwin).
 set -euo pipefail
@@ -151,4 +153,65 @@ grep -q 'merged image skipped' "${WORK_DIR}/c.log" \
   || fail "case C: collector did not print an explicit skip reason"
 assert_file "${BUNDLE_C}/esp32dev/flash_args.txt" "case C: flash_args.txt missing"
 
-echo "OK: collect-artifacts.sh verified (v4 merge_bin, v5 merge-bin fallback, boot_app0, skip reasons)"
+# ---------------------------------------------------------------------------
+# D) AVR (Arduino UNO): firmware.hex + avrdude, no esptool commands
+# ---------------------------------------------------------------------------
+AVR_PROJECT="${WORK_DIR}/project-avr"
+mkdir -p "${AVR_PROJECT}/.pio/build/uno" "${AVR_PROJECT}/src"
+cat > "${AVR_PROJECT}/platformio.ini" <<'EOF'
+[env:uno]
+platform = atmelavr@^4.0
+board = uno
+framework = arduino
+EOF
+printf ':00000001FF\n' > "${AVR_PROJECT}/.pio/build/uno/firmware.hex"
+printf 'fake-elf' > "${AVR_PROJECT}/.pio/build/uno/firmware.elf"
+
+CORE_D="${WORK_DIR}/core-d"
+mkdir -p "${CORE_D}/platforms/atmelavr@4.1.0/boards"
+cat > "${CORE_D}/platforms/atmelavr@4.1.0/boards/uno.json" <<'EOF'
+{"build": {"mcu": "atmega328p"}}
+EOF
+
+BUNDLE_D="${WORK_DIR}/bundle-d"
+run_collector "${AVR_PROJECT}" "${CORE_D}" "${BUNDLE_D}" "${WORK_DIR}/d.log"
+
+assert_file "${BUNDLE_D}/uno/firmware.hex" "case D: firmware.hex missing"
+assert_file "${BUNDLE_D}/uno/flash_args.txt" "case D: flash_args.txt missing"
+[[ ! -f "${BUNDLE_D}/uno/merged-0x0.bin" ]] || fail "case D: AVR must not produce merged-0x0.bin"
+grep -q 'avrdude -p atmega328p -c arduino' "${BUNDLE_D}/uno/flash_args.txt" \
+  || fail "case D: avrdude command with detected MCU missing"
+if grep -qE 'esptool|erase_region|merged-0x0' "${BUNDLE_D}/uno/flash_args.txt"; then
+  fail "case D: AVR flash_args.txt must not contain ESP flashing instructions"
+fi
+
+# ---------------------------------------------------------------------------
+# E) non-ESP binary platform (ststm32): no esptool write_flash 0x0
+# ---------------------------------------------------------------------------
+STM_PROJECT="${WORK_DIR}/project-stm"
+mkdir -p "${STM_PROJECT}/.pio/build/nucleo_f103rb" "${STM_PROJECT}/src"
+cat > "${STM_PROJECT}/platformio.ini" <<'EOF'
+[env:nucleo_f103rb]
+platform = ststm32
+board = nucleo_f103rb
+framework = arduino
+EOF
+printf 'fake-bin' > "${STM_PROJECT}/.pio/build/nucleo_f103rb/firmware.bin"
+
+CORE_E="${WORK_DIR}/core-e"
+mkdir -p "${CORE_E}/platforms/ststm32/boards"
+cat > "${CORE_E}/platforms/ststm32/boards/nucleo_f103rb.json" <<'EOF'
+{"build": {"mcu": "stm32f103rb"}}
+EOF
+
+BUNDLE_E="${WORK_DIR}/bundle-e"
+run_collector "${STM_PROJECT}" "${CORE_E}" "${BUNDLE_E}" "${WORK_DIR}/e.log"
+
+assert_file "${BUNDLE_E}/nucleo_f103rb/firmware.bin" "case E: firmware.bin missing"
+grep -q 'firmware.bin 需按芯片' "${BUNDLE_E}/nucleo_f103rb/flash_args.txt" \
+  || fail "case E: generic flashing note missing"
+if grep -q 'esptool' "${BUNDLE_E}/nucleo_f103rb/flash_args.txt"; then
+  fail "case E: non-ESP bin platform must not get an esptool command"
+fi
+
+echo "OK: collect-artifacts.sh verified (ESP32/ESP8266, AVR .hex, non-ESP bin, skip reasons)"
