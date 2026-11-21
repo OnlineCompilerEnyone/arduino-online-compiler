@@ -6,8 +6,8 @@
 # Produces:
 #   <bundle-dir>/<env>/firmware.bin|firmware.hex|firmware.uf2|firmware.elf
 #   <bundle-dir>/<env>/bootloader.bin|partitions.bin|boot_app0.bin
-#   <bundle-dir>/<env>/merged-0x0.bin   (single flashable image, when possible)
-#   <bundle-dir>/<env>/flash_args.txt   (ready to paste esptool commands)
+#   <bundle-dir>/<env>/merged-0x0.bin   (ESP32 single flashable image, when possible)
+#   <bundle-dir>/<env>/flash_args.txt   (ready to paste esptool / avrdude commands)
 #   <bundle-dir>/BUILD-INFO.txt
 #
 # Environment variables:
@@ -301,46 +301,70 @@ for env_path in "${BUILD_ROOT}"/*; do
     fi
   fi
 
-  create_merged_image "${env_out}" "${env_name}" "${chip}" "${board}"
+  # Only ESP32 uses the merged single-image layout; other platforms ship .hex/.uf2/.bin.
+  if [[ "${platform_name}" == espressif32* ]]; then
+    create_merged_image "${env_out}" "${env_name}" "${chip}" "${board}"
+  fi
 
   flash_lines=()
-  flash_lines+=("# env: ${env_name}    board: ${board:-unknown}    chip: ${chip:-unknown}")
+  flash_lines+=("# env: ${env_name}    board: ${board:-unknown}    platform: ${platform_name}    chip: ${chip:-unknown}")
   flash_lines+=("# 烧录端口请替换 -p 后面的参数（Windows 例如 COM5，Linux/macOS 例如 /dev/ttyUSB0）")
 
-  if [[ -f "${env_out}/merged-0x0.bin" ]]; then
-    flash_lines+=("")
-    flash_lines+=("# 方式一（推荐）：单文件镜像，从 0x0 开始写入（含 bootloader/分区表/boot_app0/应用）")
-    flash_lines+=("esptool.py --chip ${chip} -p COM_PORT -b 460800 write_flash 0x0 merged-0x0.bin")
-    flash_lines+=("")
-    flash_lines+=("# 方式二：分段镜像，与 ESP-IDF/PlatformIO 默认布局一致")
-  fi
+  case "${platform_name}" in
+    espressif32* | espressif8266*)
+      if [[ -f "${env_out}/merged-0x0.bin" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# 方式一（推荐）：单文件镜像，从 0x0 开始写入（含 bootloader/分区表/boot_app0/应用）")
+        flash_lines+=("esptool.py --chip ${chip} -p COM_PORT -b 460800 write_flash 0x0 merged-0x0.bin")
+        flash_lines+=("")
+        flash_lines+=("# 方式二：分段镜像，与 ESP-IDF/PlatformIO 默认布局一致")
+      fi
 
-  if [[ -f "${env_out}/bootloader.bin" && -f "${env_out}/partitions.bin" && -f "${env_out}/firmware.bin" ]]; then
-    individual="esptool.py --chip ${chip:-esp32} -p COM_PORT -b 460800 write_flash $(bootloader_offset "${chip}") bootloader.bin 0x8000 partitions.bin"
-    if [[ -f "${env_out}/boot_app0.bin" ]]; then
-      individual="${individual} 0xe000 boot_app0.bin"
-    fi
-    individual="${individual} 0x10000 firmware.bin"
-    flash_lines+=("${individual}")
-    flash_lines+=("# 注意：0xe000 的 boot_app0.bin 会初始化 otadata，让 bootloader 启动本次写入的 app0；")
-    flash_lines+=("#       若设备之前跑过其他 OTA 固件而少了这一步，可能仍启动旧的 app1。")
-  elif [[ -f "${env_out}/firmware.bin" ]]; then
-    flash_lines+=("")
-    flash_lines+=("# 该环境（${platform_name}）直接把 firmware.bin 写到 0x0")
-    flash_lines+=("esptool.py --chip ${chip:-esp8266} -p COM_PORT -b 460800 write_flash 0x0 firmware.bin")
-  elif [[ -f "${env_out}/firmware.hex" ]]; then
-    flash_lines+=("")
-    flash_lines+=("# AVR 等平台请使用 avrdude 烧录 firmware.hex")
-    flash_lines+=("avrdude -p <mcu> -c <programmer> -P <port> -U flash:w:firmware.hex:i")
-  elif [[ -f "${env_out}/firmware.uf2" ]]; then
-    flash_lines+=("")
-    flash_lines+=("# 将开发板置于 BOOTSEL/UF2 模式后，直接把 firmware.uf2 复制到对应磁盘")
-  fi
+      if [[ -f "${env_out}/bootloader.bin" && -f "${env_out}/partitions.bin" && -f "${env_out}/firmware.bin" ]]; then
+        individual="esptool.py --chip ${chip:-esp32} -p COM_PORT -b 460800 write_flash $(bootloader_offset "${chip}") bootloader.bin 0x8000 partitions.bin"
+        if [[ -f "${env_out}/boot_app0.bin" ]]; then
+          individual="${individual} 0xe000 boot_app0.bin"
+        fi
+        individual="${individual} 0x10000 firmware.bin"
+        flash_lines+=("${individual}")
+        flash_lines+=("# 注意：0xe000 的 boot_app0.bin 会初始化 otadata，让 bootloader 启动本次写入的 app0；")
+        flash_lines+=("#       若设备之前跑过其他 OTA 固件而少了这一步，可能仍启动旧的 app1。")
+      elif [[ -f "${env_out}/firmware.bin" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# 该环境（${platform_name}）直接把 firmware.bin 写到 0x0")
+        flash_lines+=("esptool.py --chip ${chip:-esp8266} -p COM_PORT -b 460800 write_flash 0x0 firmware.bin")
+      fi
 
-  flash_lines+=("")
-  flash_lines+=("# 设备此前运行过 OTA 固件、不确定启动哪个分区时，先擦除 otadata：")
-  flash_lines+=("#   esptool.py --chip ${chip:-esp32} -p COM_PORT erase_region 0xe000 0x2000")
-  flash_lines+=("# 需要擦除整片 flash：esptool.py --chip ${chip:-esp32} -p COM_PORT erase_flash")
+      flash_lines+=("")
+      flash_lines+=("# 设备此前运行过 OTA 固件、不确定启动哪个分区时，先擦除 otadata：")
+      flash_lines+=("#   esptool.py --chip ${chip:-esp32} -p COM_PORT erase_region 0xe000 0x2000")
+      flash_lines+=("# 需要擦除整片 flash：esptool.py --chip ${chip:-esp32} -p COM_PORT erase_flash")
+      ;;
+    atmelavr*)
+      if [[ -f "${env_out}/firmware.hex" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# AVR 平台使用 avrdude 烧录 firmware.hex（MCU 取自 board 定义）")
+        flash_lines+=("avrdude -p ${chip:-<mcu>} -c arduino -P COM_PORT -b 115200 -U flash:w:firmware.hex:i")
+        flash_lines+=("# 非 Arduino 官方 bootloader（USBasp/ISP 等）请把 -c arduino 换成对应的 programmer")
+      fi
+      ;;
+    *)
+      if [[ -f "${env_out}/firmware.hex" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# ${platform_name} 平台请按芯片官方方式烧录 firmware.hex")
+        flash_lines+=("avrdude -p ${chip:-<mcu>} -c <programmer> -P COM_PORT -U flash:w:firmware.hex:i")
+      fi
+      if [[ -f "${env_out}/firmware.uf2" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# 将开发板置于 BOOTSEL/UF2 模式后，直接把 firmware.uf2 复制到对应磁盘")
+      fi
+      if [[ ! -f "${env_out}/firmware.hex" && ! -f "${env_out}/firmware.uf2" && -f "${env_out}/firmware.bin" ]]; then
+        flash_lines+=("")
+        flash_lines+=("# ${platform_name} 平台：firmware.bin 需按芯片/板卡的官方方式烧录")
+        flash_lines+=("# 例如 ststm32 用 st-flash / dfu-util / OpenOCD，请参考对应平台文档")
+      fi
+      ;;
+  esac
   printf '%s\n' "${flash_lines[@]}" > "${env_out}/flash_args.txt"
 
   collected_envs=$((collected_envs + 1))
