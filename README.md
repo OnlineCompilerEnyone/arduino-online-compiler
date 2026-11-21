@@ -68,6 +68,7 @@ framework = arduino
 ├── scripts/download-project.py   Actions 工程包下载与安全解压
 ├── scripts/test-download-project.py  工程包下载/解压单元测试
 ├── .github/workflows/pio-compile.yml  PlatformIO 编译工作流
+├── skill/arduino-online-compiler/SKILL.md  供 AI 代理使用的编译 Skill（推荐 Base64，有中转链接时用源码包）
 └── .dev.vars.example             Wrangler 本地密钥模板
 ```
 

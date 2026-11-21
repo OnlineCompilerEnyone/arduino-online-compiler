@@ -13,3 +13,5 @@ frontend/dist/
 project/
 bundle/
 artifact/
+# Skill 的本地 GitHub token
+github_action_token.env
