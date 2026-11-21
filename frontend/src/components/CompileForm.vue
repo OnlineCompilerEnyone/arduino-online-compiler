@@ -10,17 +10,60 @@
       </section>
 
       <form class="form" @submit.prevent="handleSubmit">
-        <div class="field">
-          <span>{{ t('compileForm.fields.ini.label') }}</span>
-          <CodeEditor v-model="ini" language="ini" />
-          <p class="field-hint">{{ t('compileForm.fields.ini.hint') }}</p>
+        <div class="source-mode" role="radiogroup" :aria-label="t('compileForm.source.legend')">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="sourceMode === 'files'"
+            :class="{ active: sourceMode === 'files' }"
+            :disabled="pending"
+            @click="sourceMode = 'files'"
+          >
+            {{ t('compileForm.source.files') }}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="sourceMode === 'url'"
+            :class="{ active: sourceMode === 'url' }"
+            :disabled="pending"
+            @click="sourceMode = 'url'"
+          >
+            {{ t('compileForm.source.url') }}
+          </button>
         </div>
 
-        <div class="field">
-          <span>{{ t('compileForm.fields.sketch.label') }}</span>
-          <CodeEditor v-model="sketch" language="cpp" />
-          <p class="field-hint">{{ t('compileForm.fields.sketch.hint') }}</p>
+        <div v-if="sourceMode === 'url'" class="field">
+          <label for="project-url">{{ t('compileForm.fields.projectUrl.label') }}</label>
+          <input
+            id="project-url"
+            v-model="projectUrl"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            maxlength="2048"
+            :placeholder="t('compileForm.fields.projectUrl.placeholder')"
+            :disabled="pending"
+          />
+          <p class="field-hint">{{ t('compileForm.fields.projectUrl.hint') }}</p>
         </div>
+
+        <template v-else>
+          <div class="field">
+            <span>{{ t('compileForm.fields.ini.label') }}</span>
+            <CodeEditor v-model="ini" language="ini" />
+            <p class="field-hint">{{ t('compileForm.fields.ini.hint') }}</p>
+          </div>
+
+          <div class="field">
+            <span>{{ t('compileForm.fields.sketch.label') }}</span>
+            <CodeEditor v-model="sketch" language="cpp" />
+            <p class="field-hint">{{ t('compileForm.fields.sketch.hint') }}</p>
+          </div>
+        </template>
 
         <label class="field">
           <span>{{ t('compileForm.fields.artifactPassword.label') }}</span>
@@ -228,12 +271,17 @@ const { t, te } = useI18n();
 const STORAGE_PREFIX = 'arduino-online-compiler';
 const STORAGE_INI_KEY = `${STORAGE_PREFIX}:platformio-ini`;
 const STORAGE_SKETCH_KEY = `${STORAGE_PREFIX}:main-cpp`;
+const STORAGE_PROJECT_URL_KEY = `${STORAGE_PREFIX}:project-url`;
+const STORAGE_SOURCE_MODE_KEY = `${STORAGE_PREFIX}:source-mode`;
 const STORAGE_JOB_KEY = `${STORAGE_PREFIX}:job-state`;
 const STORAGE_PASSWORD_KEY = `${STORAGE_PREFIX}:artifact-password`;
 const STORAGE_PIO_VERSION_KEY = `${STORAGE_PREFIX}:pio-version`;
 
 const MAX_INI_BYTES = 24 * 1024;
 const MAX_SKETCH_BYTES = 64 * 1024;
+const MAX_PROJECT_URL_LENGTH = 2048;
+
+type SourceMode = 'files' | 'url';
 
 const DEFAULT_INI = `[env:esp32dev]
 platform = espressif32
@@ -274,6 +322,8 @@ const sessionLoaded = ref(false);
 
 const ini = ref(DEFAULT_INI);
 const sketch = ref(DEFAULT_SKETCH);
+const sourceMode = ref<SourceMode>('files');
+const projectUrl = ref('');
 const pioVersion = ref('');
 const runId = ref<number | null>(null);
 const requestId = ref<string | null>(null);
@@ -339,7 +389,12 @@ const canReset = computed(() => {
   if (runId.value || requestId.value) {
     return true;
   }
-  return ini.value !== DEFAULT_INI || sketch.value !== DEFAULT_SKETCH;
+  return (
+    ini.value !== DEFAULT_INI ||
+    sketch.value !== DEFAULT_SKETCH ||
+    sourceMode.value !== 'files' ||
+    projectUrl.value.trim().length > 0
+  );
 });
 
 const displayStatus = computed(() => {
@@ -454,17 +509,27 @@ function restorePassword() {
 function restoreDrafts() {
   const savedIni = readStorage(STORAGE_INI_KEY);
   const savedSketch = readStorage(STORAGE_SKETCH_KEY);
+  const savedProjectUrl = readStorage(STORAGE_PROJECT_URL_KEY);
+  const savedSourceMode = readStorage(STORAGE_SOURCE_MODE_KEY);
   if (savedIni) {
     ini.value = savedIni;
   }
   if (savedSketch) {
     sketch.value = savedSketch;
   }
+  if (savedProjectUrl) {
+    projectUrl.value = savedProjectUrl;
+  }
+  if (savedSourceMode === 'url' || savedSourceMode === 'files') {
+    sourceMode.value = savedSourceMode;
+  }
 }
 
 function persistDrafts() {
   writeStorage(STORAGE_INI_KEY, ini.value || null);
   writeStorage(STORAGE_SKETCH_KEY, sketch.value || null);
+  writeStorage(STORAGE_PROJECT_URL_KEY, projectUrl.value.trim() || null);
+  writeStorage(STORAGE_SOURCE_MODE_KEY, sourceMode.value);
 }
 
 let draftTimer: number | null = null;
@@ -504,7 +569,7 @@ onMounted(() => {
   loadSession();
 });
 
-watch([ini, sketch], () => {
+watch([ini, sketch, projectUrl, sourceMode], () => {
   scheduleDraftsPersist();
 });
 
@@ -577,21 +642,45 @@ function byteLength(value: string): number {
 }
 
 async function handleSubmit() {
-  if (!ini.value.trim()) {
-    error.value = t('compileForm.errors.iniRequired');
-    return;
-  }
-  if (!sketch.value.trim()) {
-    error.value = t('compileForm.errors.sketchRequired');
-    return;
-  }
-  if (byteLength(ini.value) > MAX_INI_BYTES) {
-    error.value = t('compileForm.errors.iniTooLarge');
-    return;
-  }
-  if (byteLength(sketch.value) > MAX_SKETCH_BYTES) {
-    error.value = t('compileForm.errors.sketchTooLarge');
-    return;
+  const trimmedUrl = projectUrl.value.trim();
+  const usingUrl = sourceMode.value === 'url';
+
+  if (usingUrl) {
+    if (!trimmedUrl) {
+      error.value = t('compileForm.errors.projectUrlRequired');
+      return;
+    }
+    if (trimmedUrl.length > MAX_PROJECT_URL_LENGTH) {
+      error.value = t('compileForm.errors.projectUrlTooLong');
+      return;
+    }
+    if (!/^https:\/\//i.test(trimmedUrl)) {
+      error.value = t('compileForm.errors.projectUrlInvalid');
+      return;
+    }
+    try {
+      new URL(trimmedUrl);
+    } catch {
+      error.value = t('compileForm.errors.projectUrlInvalid');
+      return;
+    }
+  } else {
+    if (!ini.value.trim()) {
+      error.value = t('compileForm.errors.iniRequired');
+      return;
+    }
+    if (!sketch.value.trim()) {
+      error.value = t('compileForm.errors.sketchRequired');
+      return;
+    }
+    if (byteLength(ini.value) > MAX_INI_BYTES) {
+      error.value = t('compileForm.errors.iniTooLarge');
+      return;
+    }
+    if (byteLength(sketch.value) > MAX_SKETCH_BYTES) {
+      error.value = t('compileForm.errors.sketchTooLarge');
+      return;
+    }
   }
 
   const versionToUse = pioVersion.value.trim();
@@ -650,16 +739,22 @@ async function handleSubmit() {
 
   try {
     const payload: {
-      encodedIni: string;
-      encodedSketch: string;
+      encodedIni?: string;
+      encodedSketch?: string;
+      projectUrl?: string;
       artifactPassword: string;
       useUserToken?: boolean;
       pioVersion?: string;
     } = {
-      encodedIni: Base64.encode(ini.value),
-      encodedSketch: Base64.encode(sketch.value),
       artifactPassword: normalizedPassword
     };
+
+    if (usingUrl) {
+      payload.projectUrl = trimmedUrl;
+    } else {
+      payload.encodedIni = Base64.encode(ini.value);
+      payload.encodedSketch = Base64.encode(sketch.value);
+    }
 
     if (versionToUse) {
       payload.pioVersion = versionToUse;
@@ -996,6 +1091,8 @@ function reset() {
   clearJobState();
   ini.value = DEFAULT_INI;
   sketch.value = DEFAULT_SKETCH;
+  sourceMode.value = 'files';
+  projectUrl.value = '';
   persistDrafts();
 }
 
@@ -1031,6 +1128,36 @@ onBeforeUnmount(() => {
 .form {
   display: grid;
   gap: 1.25rem;
+}
+
+.source-mode {
+  display: inline-flex;
+  gap: 0.4rem;
+  padding: 0.3rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 0.6);
+  justify-self: start;
+}
+
+.source-mode button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #cbd5f5;
+  padding: 0.4rem 1.1rem;
+  font-size: 0.88rem;
+  box-shadow: none;
+}
+
+.source-mode button:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+  background: rgba(148, 163, 184, 0.15);
+}
+
+.source-mode button.active {
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  color: #0f172a;
 }
 
 .field {
