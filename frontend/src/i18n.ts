@@ -23,7 +23,7 @@ const messages = {
       fields: {
         ini: {
           label: 'platformio.ini',
-          hint: 'PlatformIO project configuration. Only the espressif32 / espressif8266 platforms are supported, and the framework must be arduino.'
+          hint: 'PlatformIO project configuration. Any PlatformIO Registry platform whose framework is arduino works (e.g. espressif32, atmelavr/uno, ststm32).'
         },
         sketch: {
           label: 'src/main.cpp',
@@ -134,7 +134,7 @@ const messages = {
       fields: {
         ini: {
           label: 'platformio.ini',
-          hint: 'PlatformIO 工程配置。当前仅支持 espressif32 / espressif8266 平台，且 framework 必须为 arduino。'
+          hint: 'PlatformIO 工程配置。只要 framework 包含 arduino，PlatformIO Registry 中的平台都可以使用（例如 espressif32、atmelavr/uno、ststm32）。'
         },
         sketch: {
           label: 'src/main.cpp',
