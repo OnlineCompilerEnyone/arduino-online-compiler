@@ -8,8 +8,11 @@ const STATE_MAX_AGE = 600; // 10 minutes
 const MAX_INI_BYTES = 24 * 1024;
 const MAX_SKETCH_BYTES = 64 * 1024;
 
-// 只允许 PlatformIO 官方 ESP32 / ESP8266 平台，避免任意平台（含远程自定义平台）。
-const ALLOWED_PLATFORMS = ['espressif32', 'espressif8266'];
+// 平台不再维护白名单：只要 platform 指向 PlatformIO Registry 中的正式平台，
+// 且 framework 包含 arduino，就允许编译（如 atmelavr / ststm32 / raspberrypi 等）。
+// 远程 URL、本地路径和自定义安装源仍然会被拒绝，避免在 runner 上执行任意代码。
+const PLATFORM_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
+const PLATFORM_VERSION_PATTERN = /^[0-9a-z._^~<>=*+-]+$/i;
 const FORBIDDEN_INI_KEYS = ['extra_scripts', 'platform_packages'];
 type PagesContext<Env> = {
   request: Request;
@@ -425,13 +428,16 @@ function validatePlatformioIni(text: string): string | null {
     const readValue = (key: string) =>
       section.values.get(key) ?? globalEnv?.values.get(key) ?? '';
 
-    const platformValue = readValue('platform');
+    const platformValue = readValue('platform').trim();
     if (!platformValue) {
-      return `环境 ${envName} 缺少 platform 配置（仅支持 espressif32 / espressif8266）`;
+      return `环境 ${envName} 缺少 platform 配置（填写 PlatformIO Registry 中的平台名，如 atmelavr、espressif32）`;
     }
-    const platformBase = platformValue.split('@')[0].trim();
-    if (!ALLOWED_PLATFORMS.includes(platformBase)) {
-      return `环境 ${envName} 的 platform 不受支持，仅支持 espressif32 / espressif8266`;
+    const platformParts = platformValue.split('@').map((part) => part.trim());
+    if (platformParts.length > 2 || !PLATFORM_NAME_PATTERN.test(platformParts[0])) {
+      return `环境 ${envName} 的 platform 名称不合法，只能使用 PlatformIO Registry 中的平台名（可带 @版本号）`;
+    }
+    if (platformParts.length === 2 && !PLATFORM_VERSION_PATTERN.test(platformParts[1])) {
+      return `环境 ${envName} 的 platform 版本号不合法`;
     }
 
     const frameworks = readValue('framework')
