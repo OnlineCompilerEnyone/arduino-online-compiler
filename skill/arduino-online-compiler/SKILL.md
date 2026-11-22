@@ -25,7 +25,7 @@ description: 通过 GitHub Actions 云端编译 PlatformIO + Arduino 工程并�
 ## 前置条件
 
 - 二选一：已安装并登录 `gh`（`gh auth status`，或设置了 `GH_TOKEN`），或使用 GitHub token + 下文的 curl 方式（token 见「Token 配置」）。账号/token 对 `OnlineCompilerEnyone/arduino-online-compiler` 有触发 `workflow_dispatch` 的权限。
-- 需要 `base64`、`unzip`（支持密码）。
+- 需要 `base64`、`unzip`（支持密码）；Windows 上改用「Windows（PowerShell 等价实现）」一节，无需这些命令。
 - 下文统一使用 `REPO=OnlineCompilerEnyone/arduino-online-compiler`；若用户使用了自己的 fork，替换该变量即可。
 
 ## Token 配置（先检查，不要每次向用户索要）
@@ -186,6 +186,97 @@ fi
 - `ref` 默认 `main`，使用 fork 时按其默认分支调整。
 - macOS 的 `base64` 没有 `-w0`，改用 `base64 -i <file> | tr -d '\n'`。
 
+## Windows（PowerShell 等价实现）
+
+Windows 上没有 bash 时，用系统自带的 Windows PowerShell 5.1 即可，不必安装 `gh`、`jq`、`base64`、`openssl`（pwsh 7 同样适用）。只有解压带密码的产物需要 7-Zip（`winget install 7zip.7zip`），因为 `Expand-Archive` 不支持密码。
+
+先按「Token 配置」加载 token（Windows 写法）：
+
+```powershell
+$SkillDir = '<本 SKILL.md 所在目录>'
+$envFile  = Join-Path $SkillDir 'github_action_token.env'
+if (Test-Path $envFile) {
+  ((Get-Content -LiteralPath $envFile) -match '^\s*GH_TOKEN=') |
+    ForEach-Object { $env:GH_TOKEN = ($_ -replace '^\s*GH_TOKEN=', '').Trim() }
+}
+if (-not $env:GH_TOKEN) { throw '未找到 GH_TOKEN' }
+```
+
+变量与请求头：
+
+```powershell
+$Repo = 'OnlineCompilerEnyone/arduino-online-compiler'
+$Api  = "https://api.github.com/repos/$Repo"
+$H = @{
+  Authorization          = "Bearer $env:GH_TOKEN"
+  Accept                 = 'application/vnd.github+json'
+  'X-GitHub-Api-Version' = '2022-11-28'
+}
+$Req  = '{0}-{1}' -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(), (Get-Random -Minimum 1000 -Maximum 99999)
+$Pass = -join (1..32 | ForEach-Object { '0123456789abcdef'[(Get-Random -Maximum 16)] })
+```
+
+Base64 模式触发（`ToBase64String` 等价于 `base64 -w0`，单行无换行）：
+
+```powershell
+$ini    = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path 'platformio.ini')))
+$sketch = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path 'src/main.cpp')))
+$body = @{
+  ref    = 'main'
+  inputs = @{
+    request_id        = $Req
+    artifact_password = $Pass
+    encoded_ini       = $ini
+    encoded_sketch    = $sketch
+  }
+} | ConvertTo-Json -Depth 5 -Compress
+Invoke-RestMethod -Method Post -Headers $H -ContentType 'application/json' -Body $body `
+  -Uri "$Api/actions/workflows/pio-compile.yml/dispatches"
+```
+
+源码包模式把 `inputs` 换成 `@{ request_id = $Req; artifact_password = $Pass; project_url = 'https://example.com/project.zip' }`。
+
+按 `request_id` 找 run（`run-name` 固定为 `Arduino compile • <request_id>`）：
+
+```powershell
+$RunId = $null
+for ($i = 0; $i -lt 12 -and -not $RunId; $i++) {
+  $runs  = Invoke-RestMethod -Headers $H -Uri "$Api/actions/workflows/pio-compile.yml/runs?event=workflow_dispatch&per_page=30"
+  $RunId = ($runs.workflow_runs | Where-Object { $_.display_title -like "*$Req*" } | Select-Object -First 1).id
+  if (-not $RunId) { Start-Sleep -Seconds 5 }
+}
+if (-not $RunId) { throw "没有找到 request_id=$Req 的 run" }
+"run $RunId  https://github.com/$Repo/actions/runs/$RunId"
+```
+
+轮询并取回产物（外层 artifact zip 无密码，内层固件 zip 需要 `$Pass`）：
+
+```powershell
+do {
+  Start-Sleep -Seconds 10
+  $run = Invoke-RestMethod -Headers $H -Uri "$Api/actions/runs/$RunId"
+  "$($run.status) $($run.conclusion)"
+} while ($run.status -ne 'completed')
+
+if ($run.conclusion -eq 'success') {
+  $arts = Invoke-RestMethod -Headers $H -Uri "$Api/actions/runs/$RunId/artifacts"
+  $url  = ($arts.artifacts | Where-Object { $_.name -eq "firmware-$Req" }).archive_download_url
+  Invoke-WebRequest -Headers $H -Uri $url -OutFile 'artifact.zip' -UseBasicParsing
+  Expand-Archive -LiteralPath 'artifact.zip' -DestinationPath 'out' -Force
+  & "$env:ProgramFiles\7-Zip\7z.exe" x "out\firmware-$Req-password.zip" "-p$Pass" '-ofirmware' -y
+} else {
+  $jobs  = Invoke-RestMethod -Headers $H -Uri "$Api/actions/runs/$RunId/jobs"
+  $jobId = ($jobs.jobs | Where-Object { $_.conclusion -eq 'failure' } | Select-Object -First 1).id
+  $log   = Invoke-WebRequest -Headers $H -Uri "$Api/actions/jobs/$jobId/logs" -UseBasicParsing
+  ($log.Content -split "`n") | Select-Object -Last 80
+}
+```
+
+- `Invoke-RestMethod` 遇 4xx/5xx 直接抛异常，状态码取 `$_.Exception.Response.StatusCode.value__`；触发成功返回 204 且响应体为空，不抛异常即为成功。
+- `archive_download_url` 会 302 到签名地址，`Invoke-WebRequest` 自动跟随；换主机时 .NET 会丢弃 `Authorization`，签名 URL 本就不需要它。
+- 7-Zip 默认装在 `$env:ProgramFiles\7-Zip\7z.exe`；自定义安装目录时改该路径即可。
+- 装 `gh` 亦可（`winget install GitHub.cli`），但本节命令不依赖它。
+
 ## 产物说明
 
 ```
@@ -218,4 +309,5 @@ firmware/
 | `Project download failed` | 中转链接失效/需要登录/不是直链；确认后重试 |
 | 工程包根目录缺 `platformio.ini` | 重新打包，保证 `platformio.ini` 在压缩包根 |
 | `unzip` 提示密码错误 | 使用触发时的 `PASS`；注意 shell 引号 |
+| `Expand-Archive` 打不开内层 zip | 内层有密码，改用 7-Zip：`7z x <zip> -p<PASS>` |
 | 找不到 run | 稍等几秒重试 `gh run list`，并确认 `REQ` 一致 |
